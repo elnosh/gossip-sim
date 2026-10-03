@@ -44,6 +44,11 @@ pub struct ViewFilter {
 	pub stale_secs: u32,
 	/// Whether a missing direction counts as stale for `stale_rule` (LND and Eclair yes, CLN no).
 	pub missing_is_stale: bool,
+	/// Whether channels with no update at all can be pruned (LND never finds them in its update
+	/// index, so it keeps them; Eclair and LDK prune them).
+	pub prune_no_update_chans: bool,
+	/// Channels younger than this (by block time) are never pruned (Eclair: 2016 blocks).
+	pub prune_min_age_secs: u32,
 	pub drops: Vec<StructuredDrop>,
 }
 
@@ -54,6 +59,8 @@ impl Default for ViewFilter {
 			stale_rule: StaleRule::Never,
 			stale_secs: 14 * 24 * 3600,
 			missing_is_stale: true,
+			prune_no_update_chans: true,
+			prune_min_age_secs: 0,
 			drops: Vec::new(),
 		}
 	}
@@ -118,11 +125,15 @@ impl PeerView {
 					_ => stale[d] = filter.missing_is_stale,
 				}
 			}
-			let pruned = match filter.stale_rule {
-				StaleRule::Never => false,
-				StaleRule::BothSides => stale[0] && stale[1],
-				StaleRule::EitherSide => stale[0] || stale[1],
-			};
+			let age = t.saturating_sub(corpus.time_of_height(entry.block_height()));
+			let prunable = age > filter.prune_min_age_secs
+				&& (filter.prune_no_update_chans || has_upd[0] || has_upd[1]);
+			let pruned = prunable
+				&& match filter.stale_rule {
+					StaleRule::Never => false,
+					StaleRule::BothSides => stale[0] && stale[1],
+					StaleRule::EitherSide => stale[0] || stale[1],
+				};
 			if pruned {
 				continue;
 			}
@@ -189,7 +200,8 @@ fn drop_applies(
 	}
 }
 
-/// What a fully synced node could know at a point in time: the union of the peers' views.
+/// What a fully synced node could know at a point in time: the union of the peers' views,
+/// counting only updates young enough to be accepted (LDK rejects updates older than 14 days).
 #[derive(Debug, Clone, Default)]
 pub struct GroundTruth {
 	/// scid -> freshest known update timestamp per direction (None if no peer knows one).
@@ -199,13 +211,16 @@ pub struct GroundTruth {
 }
 
 impl GroundTruth {
+	/// Updates older than this at the view time are not counted.
+	pub const MAX_UPDATE_AGE: u32 = 14 * 24 * 3600;
+
 	pub fn union<'a>(views: impl IntoIterator<Item = &'a PeerView>) -> GroundTruth {
 		let mut gt = GroundTruth::default();
 		for v in views {
 			for (scid, c) in &v.chans {
 				let e = gt.chans.entry(*scid).or_insert([None, None]);
 				for d in 0..2 {
-					if let Some(u) = c.upd(d) {
+					if let Some(u) = c.upd(d).filter(|u| v.at.saturating_sub(u.timestamp) <= Self::MAX_UPDATE_AGE) {
 						e[d] = Some(e[d].map_or(u.timestamp, |x| x.max(u.timestamp)));
 					}
 				}

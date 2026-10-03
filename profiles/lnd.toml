@@ -1,0 +1,33 @@
+# LND responder model. Source: lnd a79ffec9e (2026-08-18).
+kind = "lnd"
+
+# Passive syncer filter: firstTimestamp = uint32(time.Time{}.Unix()) = 2288912640, range 0
+# (discovery/syncer.go:1850-1852). Active syncers send first=now (syncer.go:683-686).
+own_filter = { kind = "fixed", first = 2288912640, range = 0 }
+
+# Every reply and backlog message goes through sendMsgRateLimited: per-peer token bucket
+# DefaultPeerMsgBytesPerSecond = 50 KiB/s, burst 2x (discovery/syncer.go:428-437, sync_manager.go:47).
+limiter = { kind = "token_bucket", bytes_per_sec = 51200.0, burst_bytes = 102400.0 }
+
+# encodingTypeToChunkSize[EncodingSortedPlain] = 8000, halved with timestamps (syncer.go:195-197, 1305-1308).
+range_chunk_scids = 8000
+range_max_bytes = 0
+recent_window_secs = 0
+range_queries_per_sec = 0.0
+full_sync_threshold_secs = 0
+# query_option timestamps supported; checksums not implemented anywhere in lnwire.
+supports_timestamps = true
+supports_checksums = false
+
+[view]
+# FilterChannelRange returns channels with an AuthProof, with or without policies (kv_store.go:2905-3052).
+include_no_update_chans = true
+# isZombieChannel: zombie when both directions are stale or missing, DefaultChannelPruneExpiry 14d
+# (graph/builder.go:31, 525-539). Channels with no policy are never found by pruneZombieChans
+# because it scans the update index.
+stale_rule = "both_sides"
+stale_secs = 1209600
+missing_is_stale = true
+prune_no_update_chans = false
+prune_min_age_secs = 0
+drops = []

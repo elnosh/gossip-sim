@@ -1,0 +1,26 @@
+# Quick end-to-end check: baseline bootstrap against one peer of each kind.
+corpus = "graph"
+out_dir = "out/smoke"
+strategies = ["baseline"]
+
+[run]
+duration_s = 3600
+
+[[peer_sets]]
+name = "1ldk"
+peers = [{ profile = "ldk" }]
+
+[[peer_sets]]
+name = "1lnd"
+peers = [{ profile = "lnd" }]
+
+[[peer_sets]]
+name = "1cln"
+peers = [{ profile = "cln" }]
+
+[[peer_sets]]
+name = "1eclair"
+peers = [{ profile = "eclair" }]
+
+[[scenarios]]
+kind = "bootstrap"

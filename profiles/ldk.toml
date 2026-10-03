@@ -1,0 +1,30 @@
+# LDK responder model. Source: rust-lightning d9aa340f9 (routing/gossip.rs, ln/peer_handler.rs).
+kind = "ldk"
+
+# P2PGossipSync::peer_connected: now - 2 weeks for the first 5 peers, now - 1 hour afterwards.
+# A long-running LDK node has usually used up its 5, so it sends now - 1h to a new peer.
+own_filter = { kind = "now_minus", secs = 3600 }
+
+# Backfill stops after BUFFER_DRAIN_MSGS_PER_TICK = 32 messages until a pong arrives (peer_handler.rs:773).
+limiter = { kind = "ping_gated", msgs = 32 }
+
+# MAX_SCIDS_PER_REPLY = 8000 (gossip.rs:76), no TLVs.
+range_chunk_scids = 8000
+range_max_bytes = 0
+recent_window_secs = 0
+range_queries_per_sec = 0.0
+# A filter older than now - 6h triggers a full graph replay (peer_handler.rs ~2367).
+full_sync_threshold_secs = 21600
+supports_timestamps = false
+supports_checksums = false
+
+[view]
+include_no_update_chans = true
+# remove_stale_channels_and_tracking: a channel with a missing (or expired) direction is removed
+# once its announcement was received more than 14d ago (gossip.rs ~2356-2392).
+stale_rule = "either_side"
+stale_secs = 1209600
+missing_is_stale = true
+prune_no_update_chans = true
+prune_min_age_secs = 1209600
+drops = []

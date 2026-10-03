@@ -1,0 +1,29 @@
+# Eclair responder model. Source: ACINQ/eclair master (router/Sync.scala, io/PeerConnection.scala,
+# router/StaleChannels.scala, reference.conf).
+kind = "eclair"
+
+# GossipTimestampFilter(firstTimestamp = now - 1 minute, timestampRange = Int.MaxValue).
+own_filter = { kind = "now_minus", secs = 60 }
+
+# No byte limiter on outbound gossip.
+limiter = { kind = "none" }
+
+# router.sync.channel-range-chunk-size = 1500.
+range_chunk_scids = 1500
+range_max_bytes = 0
+recent_window_secs = 0
+# router.sync.max-queries-per-second = 5 (excess query_channel_range dropped by gossipQueriesRateLimiter).
+range_queries_per_sec = 5.0
+full_sync_threshold_secs = 0
+supports_timestamps = true
+supports_checksums = true
+
+[view]
+include_no_update_chans = true
+# StaleChannels.isStale: older than 2016 blocks AND (update1 missing-or-stale OR update2 missing-or-stale), 14d.
+stale_rule = "either_side"
+stale_secs = 1209600
+missing_is_stale = true
+prune_no_update_chans = true
+prune_min_age_secs = 1209600
+drops = []
