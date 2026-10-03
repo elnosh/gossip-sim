@@ -1,0 +1,52 @@
+# The wrapper strategy vs. the same logic ported into P2PGossipSync.
+corpus = "graph"
+out_dir = "out/port"
+seed = 1
+
+strategies = ["range_then_scids", "ldk_query_sync"]
+
+[run]
+duration_s = 7200
+
+[link]
+latency_ms = 40
+bandwidth_mbps = 20.0
+
+[[peer_sets]]
+name = "mixed"
+peers = [{ profile = "lnd" }, { profile = "cln" }, { profile = "eclair" }]
+
+# Rough mainnet implementation mix for an 8-peer node.
+[[peer_sets]]
+name = "mixed8"
+peers = [{ profile = "lnd", count = 4 }, { profile = "cln", count = 2 }, { profile = "eclair" }, { profile = "ldk" }]
+
+[[peer_sets]]
+name = "3lnd"
+peers = [{ profile = "lnd", count = 3 }]
+
+[[peer_sets]]
+name = "3cln"
+peers = [{ profile = "cln", count = 3 }]
+
+[[peer_sets]]
+name = "3eclair"
+peers = [{ profile = "eclair", count = 3 }]
+
+[[peer_sets]]
+name = "3ldk"
+peers = [{ profile = "ldk", count = 3 }]
+
+[[scenarios]]
+kind = "bootstrap"
+
+[[scenarios]]
+kind = "restart"
+offline = ["1h", "6h", "1d", "3d", "7d", "13d", "15d", "21d"]
+
+# Same offline durations, but directions updated after shutdown were persisted as an older copy
+# (separates the single-dump artifact from LDK's own pruning behaviour).
+[[scenarios]]
+kind = "restart"
+offline = ["1h", "6h", "1d", "3d", "7d", "13d", "15d", "21d"]
+persisted_updates = "older_version"

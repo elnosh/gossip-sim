@@ -111,9 +111,19 @@ impl StrategySpec {
 		s
 	}
 
-	pub fn build(&self) -> crate::Result<Box<dyn Strategy>> {
+	pub fn build(&self) -> crate::Result<Built> {
 		let p = self.params();
-		Ok(match p.name.as_str() {
+		if p.name == "ldk_query_sync" {
+			let d = lightning::routing::query_sync::QuerySyncConfig::default();
+			return Ok(Built::Native(lightning::routing::query_sync::QuerySyncConfig {
+				query_peers: p.query_peers.unwrap_or(d.query_peers),
+				use_checksums: p.use_checksums.unwrap_or(d.use_checksums),
+				batch: p.batch.unwrap_or(d.batch),
+				query_timeout_secs: p.query_timeout_secs.unwrap_or(d.query_timeout_secs),
+				filter_lookback_secs: p.filter_lookback_secs.unwrap_or(d.filter_lookback_secs),
+			}));
+		}
+		Ok(Built::Wrapper(match p.name.as_str() {
 			"baseline" => Box::new(Baseline::new(p.full_peers.unwrap_or(5))),
 			"filter_since_last_seen" => {
 				Box::new(FilterSinceLastSeen::new(p.full_peers.unwrap_or(5), p.margin_secs.unwrap_or(3600)))
@@ -127,13 +137,21 @@ impl StrategySpec {
 				balance: p.balance.unwrap_or(true),
 			})),
 			other => return Err(format!("unknown strategy `{other}`").into()),
-		})
+		}))
 	}
+}
+
+/// A strategy implemented in the sim (wrapper) or inside the LDK fork's `P2PGossipSync`.
+pub enum Built {
+	Wrapper(Box<dyn Strategy>),
+	/// `P2PGossipSync::with_query_sync`: the ported range_then_scids running in LDK itself.
+	Native(lightning::routing::query_sync::QuerySyncConfig),
 }
 
 pub struct StrategyHandler {
 	inner: Gossip,
-	strat: Mutex<Box<dyn Strategy>>,
+	/// None: native mode, everything is delegated to `inner`.
+	strat: Option<Mutex<Box<dyn Strategy>>>,
 	pending: Mutex<Vec<MessageSendEvent>>,
 	pub applied: AtomicU64,
 	pub rejected: AtomicU64,
@@ -144,10 +162,15 @@ fn now() -> u64 {
 }
 
 impl StrategyHandler {
-	pub fn new(inner: Gossip, strat: Box<dyn Strategy>) -> StrategyHandler {
+	/// Builds the handler; a native strategy enables the query sync on the inner `P2PGossipSync`.
+	pub fn new(inner: Gossip, built: Built) -> StrategyHandler {
+		let (inner, strat) = match built {
+			Built::Wrapper(s) => (inner, Some(Mutex::new(s))),
+			Built::Native(cfg) => (inner.with_query_sync(cfg), None),
+		};
 		StrategyHandler {
 			inner,
-			strat: Mutex::new(strat),
+			strat,
 			pending: Mutex::new(Vec::new()),
 			applied: AtomicU64::new(0),
 			rejected: AtomicU64::new(0),
@@ -159,25 +182,32 @@ impl StrategyHandler {
 	}
 
 	pub fn on_timer(&self) {
+		let Some(strat) = &self.strat else { return };
 		let mut out = Vec::new();
-		self.strat.lock().unwrap().on_timer(self.graph(), now(), &mut out);
+		strat.lock().unwrap().on_timer(self.graph(), now(), &mut out);
 		self.pending.lock().unwrap().extend(out);
 	}
 
 	pub fn is_idle(&self) -> bool {
-		self.strat.lock().unwrap().is_idle()
+		match &self.strat {
+			Some(s) => s.lock().unwrap().is_idle(),
+			None => self.inner.query_sync_idle(),
+		}
 	}
 
 	fn record<T>(&self, from: Option<PublicKey>, r: &Result<T, LightningError>, what: Applied) {
-		let mut strat = self.strat.lock().unwrap();
+		if r.is_ok() {
+			self.applied.fetch_add(1, Ordering::Relaxed);
+		} else {
+			self.rejected.fetch_add(1, Ordering::Relaxed);
+		}
+		let Some(strat) = &self.strat else { return };
+		let mut strat = strat.lock().unwrap();
 		if let Some(f) = from {
 			strat.on_gossip_from(f, now());
 		}
 		if r.is_ok() {
-			self.applied.fetch_add(1, Ordering::Relaxed);
 			strat.on_applied(from, what, now());
-		} else {
-			self.rejected.fetch_add(1, Ordering::Relaxed);
 		}
 	}
 }
@@ -191,7 +221,9 @@ impl BaseMessageHandler for StrategyHandler {
 
 	fn peer_disconnected(&self, their_node_id: PublicKey) {
 		self.inner.peer_disconnected(their_node_id);
-		self.strat.lock().unwrap().on_peer_disconnected(their_node_id);
+		if let Some(s) = &self.strat {
+			s.lock().unwrap().on_peer_disconnected(their_node_id);
+		}
 	}
 
 	fn provided_node_features(&self) -> NodeFeatures {
@@ -202,9 +234,10 @@ impl BaseMessageHandler for StrategyHandler {
 		self.inner.provided_init_features(their_node_id)
 	}
 
-	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, _inbound: bool) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool) -> Result<(), ()> {
+		let Some(strat) = &self.strat else { return self.inner.peer_connected(their_node_id, msg, inbound) };
 		let mut out = Vec::new();
-		self.strat.lock().unwrap().on_peer_connected(their_node_id, msg, self.graph(), now(), &mut out);
+		strat.lock().unwrap().on_peer_connected(their_node_id, msg, self.graph(), now(), &mut out);
 		self.pending.lock().unwrap().extend(out);
 		Ok(())
 	}
@@ -253,8 +286,9 @@ impl RoutingMessageHandler for StrategyHandler {
 	fn handle_reply_channel_range(
 		&self, their_node_id: PublicKey, msg: ReplyChannelRange,
 	) -> Result<(), LightningError> {
+		let Some(strat) = &self.strat else { return self.inner.handle_reply_channel_range(their_node_id, msg) };
 		let mut out = Vec::new();
-		self.strat.lock().unwrap().on_reply_channel_range(their_node_id, msg, self.graph(), now(), &mut out);
+		strat.lock().unwrap().on_reply_channel_range(their_node_id, msg, self.graph(), now(), &mut out);
 		self.pending.lock().unwrap().extend(out);
 		Ok(())
 	}
@@ -262,8 +296,9 @@ impl RoutingMessageHandler for StrategyHandler {
 	fn handle_reply_short_channel_ids_end(
 		&self, their_node_id: PublicKey, msg: ReplyShortChannelIdsEnd,
 	) -> Result<(), LightningError> {
+		let Some(strat) = &self.strat else { return self.inner.handle_reply_short_channel_ids_end(their_node_id, msg) };
 		let mut out = Vec::new();
-		self.strat.lock().unwrap().on_reply_short_channel_ids_end(their_node_id, msg, self.graph(), now(), &mut out);
+		strat.lock().unwrap().on_reply_short_channel_ids_end(their_node_id, msg, self.graph(), now(), &mut out);
 		self.pending.lock().unwrap().extend(out);
 		Ok(())
 	}
