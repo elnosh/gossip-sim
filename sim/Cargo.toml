@@ -1,0 +1,22 @@
+[package]
+name = "gossip-sim"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gossip-sim"
+path = "src/main.rs"
+
+[dependencies]
+corpus = { path = "../corpus" }
+lightning = { workspace = true }
+bitcoin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+toml = "0.8"

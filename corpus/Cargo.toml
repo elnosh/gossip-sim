@@ -1,0 +1,12 @@
+[package]
+name = "corpus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lightning = { workspace = true }
+bitcoin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
