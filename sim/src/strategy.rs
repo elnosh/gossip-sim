@@ -49,6 +49,8 @@ pub trait Strategy: Send {
 	/// Called once per simulated second.
 	fn on_timer(&mut self, _graph: &Graph, _now: u64, _out: &mut Vec<MessageSendEvent>) {}
 	fn on_applied(&mut self, _from: Option<PublicKey>, _what: Applied, _now: u64) {}
+	/// Called for every gossip message received from a peer, applied or rejected.
+	fn on_gossip_from(&mut self, _from: PublicKey, _now: u64) {}
 	/// No queries outstanding or queued (used for convergence and early stop).
 	fn is_idle(&self) -> bool {
 		true
@@ -84,6 +86,8 @@ pub struct StrategyParams {
 	pub query_timeout_secs: Option<u64>,
 	/// range_then_scids: first_timestamp of the filter is now minus this.
 	pub filter_lookback_secs: Option<u32>,
+	/// range_then_scids: assign scids after all range replies, balancing load across peers.
+	pub balance: Option<bool>,
 }
 
 impl StrategySpec {
@@ -103,7 +107,7 @@ impl StrategySpec {
 		macro_rules! add {
 			($($f:ident),*) => { $( if let Some(v) = &p.$f { s.push_str(&format!("-{}{}", stringify!($f), v)); } )* };
 		}
-		add!(full_peers, margin_secs, query_peers, use_checksums, batch, query_timeout_secs, filter_lookback_secs);
+		add!(full_peers, margin_secs, query_peers, use_checksums, batch, query_timeout_secs, filter_lookback_secs, balance);
 		s
 	}
 
@@ -120,6 +124,7 @@ impl StrategySpec {
 				batch: p.batch.unwrap_or(2000),
 				query_timeout_secs: p.query_timeout_secs.unwrap_or(30),
 				filter_lookback_secs: p.filter_lookback_secs.unwrap_or(0),
+				balance: p.balance.unwrap_or(true),
 			})),
 			other => return Err(format!("unknown strategy `{other}`").into()),
 		})
@@ -164,9 +169,13 @@ impl StrategyHandler {
 	}
 
 	fn record<T>(&self, from: Option<PublicKey>, r: &Result<T, LightningError>, what: Applied) {
+		let mut strat = self.strat.lock().unwrap();
+		if let Some(f) = from {
+			strat.on_gossip_from(f, now());
+		}
 		if r.is_ok() {
 			self.applied.fetch_add(1, Ordering::Relaxed);
-			self.strat.lock().unwrap().on_applied(from, what, now());
+			strat.on_applied(from, what, now());
 		} else {
 			self.rejected.fetch_add(1, Ordering::Relaxed);
 		}

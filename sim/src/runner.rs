@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use crate::engine::{self, LinkCfg, RunCfg, RunSpec};
 use crate::metrics::{self, Row};
 use crate::profile::Profile;
-use crate::scenario::{parse_duration, Scenario};
+use crate::scenario::{parse_duration, PersistedUpdates, Scenario};
 use crate::strategy::StrategySpec;
 
 #[derive(Debug, Deserialize)]
@@ -65,7 +65,11 @@ fn one() -> usize {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScenarioCfg {
 	Bootstrap,
-	Restart { offline: Vec<String> },
+	Restart {
+		offline: Vec<String>,
+		#[serde(default)]
+		persisted_updates: PersistedUpdates,
+	},
 }
 
 impl Experiment {
@@ -95,9 +99,9 @@ impl Experiment {
 		for s in &self.scenarios {
 			match s {
 				ScenarioCfg::Bootstrap => v.push(Scenario::Bootstrap),
-				ScenarioCfg::Restart { offline } => {
+				ScenarioCfg::Restart { offline, persisted_updates } => {
 					for o in offline {
-						v.push(Scenario::Restart { offline_secs: parse_duration(o)? });
+						v.push(Scenario::Restart { offline_secs: parse_duration(o)?, persisted: *persisted_updates });
 					}
 				},
 			}

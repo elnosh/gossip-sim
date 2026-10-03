@@ -49,3 +49,10 @@ kind = "bootstrap"
 [[scenarios]]
 kind = "restart"
 offline = ["1h", "6h", "1d", "3d", "7d", "13d", "15d", "21d"]
+
+# Same offline durations, but directions updated after shutdown were persisted as an older copy
+# (separates the single-dump artifact from LDK's own pruning behaviour).
+[[scenarios]]
+kind = "restart"
+offline = ["1h", "6h", "1d", "3d", "7d", "13d", "15d", "21d"]
+persisted_updates = "older_version"

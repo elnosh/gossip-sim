@@ -106,7 +106,20 @@ fn range_then_scids_works_around_ldk_peers_ignoring_scid_queries() {
 fn restart_needs_less_than_bootstrap_with_range_queries() {
 	let st = StrategySpec::Table(StrategyParams { name: "range_then_scids".into(), ..Default::default() });
 	let boot = engine::run(&spec("b", st.clone(), &[(Kind::Lnd, 2)], Scenario::Bootstrap), corpus(), &out_dir("b")).unwrap();
-	let rst = engine::run(&spec("r", st, &[(Kind::Lnd, 2)], Scenario::Restart { offline_secs: 3600 }), corpus(), &out_dir("r")).unwrap();
+	let rst = engine::run(&spec("r", st, &[(Kind::Lnd, 2)], Scenario::Restart { offline_secs: 3600, persisted: Default::default() }), corpus(), &out_dir("r")).unwrap();
 	assert_eq!(f(&rst.row, "frac_upds"), 1.0);
 	assert!(f(&rst.row, "rx_bytes") < f(&boot.row, "rx_bytes") / 3.0);
+}
+
+#[test]
+fn balanced_assignment_spreads_scid_queries_across_peers() {
+	let mk = |balance| StrategySpec::Table(StrategyParams { name: "range_then_scids".into(), balance: Some(balance), ..Default::default() });
+	let bal = engine::run(&spec("bal", mk(true), &[(Kind::Lnd, 3)], Scenario::Bootstrap), corpus(), &out_dir("bal")).unwrap();
+	let first = engine::run(&spec("first", mk(false), &[(Kind::Lnd, 3)], Scenario::Bootstrap), corpus(), &out_dir("first")).unwrap();
+	let queried = |o: &engine::RunOutput| -> Vec<u64> {
+		o.peers.iter().map(|(_, st)| st.from_ldk.get(&msg_type::QUERY_SHORT_CHANNEL_IDS).map_or(0, |x| x.0)).collect()
+	};
+	assert!(queried(&bal).iter().all(|n| *n > 0), "{:?}", queried(&bal));
+	let t = |o: &engine::RunOutput| f(&o.row, "t_converged_s");
+	assert!(t(&bal) * 2.0 < t(&first), "balanced {} vs first-come {}", t(&bal), t(&first));
 }

@@ -1,7 +1,12 @@
 //! The corpus: every signed gossip message derived from a dump, plus a compact binary cache
 //! format so a dump is only signed once.
 
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::{Message, Secp256k1, SecretKey};
+use lightning::ln::msgs::{ChannelUpdate, NodeAnnouncement};
 use lightning::routing::gossip::NodeId;
+use lightning::util::ser::{LengthReadable, Writeable};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -65,6 +70,8 @@ pub struct Corpus {
 	pub meta: Meta,
 	pub chans: BTreeMap<u64, Arc<ChanEntry>>,
 	pub nodes: BTreeMap<NodeId, Arc<NodeEntry>>,
+	/// Synthetic signing keys of channel endpoints, to re-sign messages with other timestamps.
+	pub node_keys: BTreeMap<NodeId, SecretKey>,
 }
 
 impl Corpus {
@@ -88,9 +95,34 @@ impl Corpus {
 		self.chans.values().map(|c| c.upd.iter().flatten().count()).sum()
 	}
 
+	fn sign(&self, node: &NodeId, unsigned: &impl Writeable) -> Option<bitcoin::secp256k1::ecdsa::Signature> {
+		let sk = self.node_keys.get(node)?;
+		let h = Sha256dHash::hash(&unsigned.encode());
+		Some(Secp256k1::signing_only().sign_ecdsa(&Message::from_digest(h.to_byte_array()), sk))
+	}
+
+	/// The channel's update in direction `dir` with a different timestamp, re-signed (same
+	/// contents, so the same checksum: what a keepalive refresh looks like).
+	pub fn retimestamp_update(&self, chan: &ChanEntry, dir: usize, timestamp: u32) -> Option<ChannelUpdate> {
+		let u = chan.upd[dir].as_ref()?;
+		let mut msg = ChannelUpdate::read_from_fixed_length_buffer(&mut &u.bytes[..]).ok()?;
+		msg.contents.timestamp = timestamp;
+		let signer = if dir == 0 { chan.node1 } else { chan.node2 };
+		msg.signature = self.sign(&signer, &msg.contents)?;
+		Some(msg)
+	}
+
+	/// A node's announcement with a different timestamp, re-signed.
+	pub fn retimestamp_node(&self, node: &NodeEntry, timestamp: u32) -> Option<NodeAnnouncement> {
+		let mut msg = NodeAnnouncement::read_from_fixed_length_buffer(&mut &node.bytes[..]).ok()?;
+		msg.contents.timestamp = timestamp;
+		msg.signature = self.sign(&node.node_id, &msg.contents)?;
+		Some(msg)
+	}
+
 	// ---- binary cache -----------------------------------------------------------------------
 
-	const MAGIC: &'static [u8; 4] = b"GSC1";
+	const MAGIC: &'static [u8; 4] = b"GSC2";
 
 	pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
 		let mut w = io::BufWriter::new(w);
@@ -115,6 +147,11 @@ impl Corpus {
 					},
 				}
 			}
+		}
+		w.write_all(&(self.node_keys.len() as u32).to_le_bytes())?;
+		for (id, sk) in &self.node_keys {
+			w.write_all(id.as_slice())?;
+			w.write_all(&sk.secret_bytes())?;
 		}
 		w.write_all(&(self.nodes.len() as u32).to_le_bytes())?;
 		for n in self.nodes.values() {
@@ -154,6 +191,15 @@ impl Corpus {
 			}
 			chans.insert(scid, Arc::new(ChanEntry { scid, node1, node2, capacity_sat, ann, upd }));
 		}
+		let nkeys = read_u32(&mut r)? as usize;
+		let mut node_keys = BTreeMap::new();
+		for _ in 0..nkeys {
+			let id = read_node_id(&mut r)?;
+			let mut b = [0u8; 32];
+			r.read_exact(&mut b)?;
+			let sk = SecretKey::from_slice(&b).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad key"))?;
+			node_keys.insert(id, sk);
+		}
 		let nnodes = read_u32(&mut r)? as usize;
 		let mut nodes = BTreeMap::new();
 		for _ in 0..nnodes {
@@ -162,7 +208,7 @@ impl Corpus {
 			let bytes = read_bytes(&mut r)?;
 			nodes.insert(node_id, Arc::new(NodeEntry { node_id, bytes, timestamp }));
 		}
-		Ok(Corpus { meta, chans, nodes })
+		Ok(Corpus { meta, chans, nodes, node_keys })
 	}
 
 	pub fn save(&self, path: &std::path::Path) -> io::Result<()> {

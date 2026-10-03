@@ -425,7 +425,7 @@ impl<'a> Sim<'a> {
 		r.put("run_id", &spec.id);
 		r.put("strategy", spec.strategy.label());
 		r.put("peer_set", &spec.peer_set);
-		r.put("scenario", if spec.scenario == Scenario::Bootstrap { "bootstrap" } else { "restart" });
+		r.put("scenario", spec.scenario.kind());
 		r.put("offline_s", spec.scenario.offline_secs());
 		r.put("seed", spec.seed);
 		r.put("end_reason", self.end_reason.unwrap_or(""));

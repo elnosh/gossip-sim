@@ -73,7 +73,10 @@ pub fn load_or_import(json_path: &Path) -> Result<Corpus> {
 	let cache = cache_path(json_path);
 	if let (Ok(cm), Ok(jm)) = (std::fs::metadata(&cache), std::fs::metadata(json_path)) {
 		if cm.modified()? >= jm.modified()? {
-			return Ok(Corpus::load(&cache)?);
+			// A cache in an older format fails to load and is rebuilt below.
+			if let Ok(c) = Corpus::load(&cache) {
+				return Ok(c);
+			}
 		}
 	}
 	let (corpus, _stats) = import_graph(json_path)?;
@@ -311,7 +314,8 @@ pub fn build(graph: &Graph) -> Result<(Corpus, ImportStats)> {
 	}
 
 	stats.sign_secs = started.elapsed().as_secs_f64();
-	Ok((Corpus { meta: Meta { dump_time, max_height }, chans, nodes }, stats))
+	let node_keys = synth.values().filter(|n| nodes_with_chans.contains(&n.id)).map(|n| (n.id, n.sk)).collect();
+	Ok((Corpus { meta: Meta { dump_time, max_height }, chans, nodes, node_keys }, stats))
 }
 
 #[cfg(test)]
@@ -368,12 +372,32 @@ mod tests {
 	}
 
 	#[test]
+	fn retimestamped_messages_verify_and_keep_checksum() {
+		let (corpus, _) = build(&mock::graph(4, 30, 60, 1_700_000_000, 800_000)).unwrap();
+		lightning::util::sim_clock::set_unix_now(corpus.meta.dump_time as u64);
+		let logger = NullLogger;
+		let graph = NetworkGraph::new(Network::Bitcoin, &logger);
+		let c = corpus.chans.values().find(|c| c.upd[1].is_some()).unwrap();
+		let ann = msgs::ChannelAnnouncement::read_from_fixed_length_buffer(&mut &c.ann[..]).unwrap();
+		graph.update_channel_from_announcement_no_lookup(&ann).unwrap();
+		let orig = c.upd[1].as_ref().unwrap();
+		let older = corpus.retimestamp_update(c, 1, orig.timestamp - 100).unwrap();
+		assert_eq!(older.contents.timestamp, orig.timestamp - 100);
+		assert_eq!(channel_update_checksum(&older.encode()), orig.checksum);
+		graph.update_channel(&older).expect("re-signed update verifies");
+		let n = corpus.nodes.values().find(|n| corpus.node_keys.contains_key(&n.node_id)).unwrap();
+		let na = corpus.retimestamp_node(n, n.timestamp - 100).unwrap();
+		assert_eq!(na.contents.timestamp, n.timestamp - 100);
+	}
+
+	#[test]
 	fn corpus_cache_round_trips() {
 		let g = mock::graph(3, 20, 40, 1_700_000_000, 800_000);
 		let (corpus, _) = build(&g).unwrap();
 		let mut buf = Vec::new();
 		corpus.write_to(&mut buf).unwrap();
 		let back = Corpus::read_from(&mut &buf[..]).unwrap();
+		assert_eq!(back.node_keys, corpus.node_keys);
 		assert_eq!(back.chans.len(), corpus.chans.len());
 		assert_eq!(back.nodes.len(), corpus.nodes.len());
 		assert_eq!(back.meta.dump_time, corpus.meta.dump_time);
