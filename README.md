@@ -150,6 +150,7 @@ or `older_version` (its current update re-signed with an older timestamp).
 | `filter_since_last_seen` | the filter starts just before the newest update already in the graph |
 | `range_then_scids` | `query_channel_range` with timestamps/checksums, then `query_short_channel_ids` for what is missing or newer, then a recent filter |
 | `ldk_query_sync` | the same logic as `range_then_scids`, running inside the fork's `P2PGossipSync` |
+| `queries_then_filter` | `range_then_scids` with only one-hour filters, so no peer replays its graph, and range queries repeated after a reconnect |
 
 A strategy is given by name, or as a table with parameters (number of wide-filter or query peers,
 checksums, batch size, timeouts, filter lookback, load balancing, and more). See `StrategyParams` in

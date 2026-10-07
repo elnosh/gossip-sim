@@ -5,7 +5,7 @@ corpus = "graph.json"
 out_dir = "out/reconnect"
 seed = 1
 
-strategies = ["baseline"]
+strategies = ["baseline", "queries_then_filter"]
 
 [run]
 duration_s = 7200
@@ -22,6 +22,11 @@ peers = [{ profile = "lnd", count = 3 }]
 [[peer_sets]]
 name = "5lnd"
 peers = [{ profile = "lnd", count = 5 }]
+
+# Rough mainnet implementation mix for an 8-peer node.
+[[peer_sets]]
+name = "mixed8"
+peers = [{ profile = "lnd", count = 4 }, { profile = "cln", count = 2 }, { profile = "eclair" }, { profile = "ldk" }]
 
 [[scenarios]]
 kind = "bootstrap"

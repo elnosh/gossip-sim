@@ -1,0 +1,33 @@
+# Bootstrap against each implementation on its own: filter-only sync (baseline) vs. query-based
+# sync with a one-hour filter (queries_then_filter).
+corpus = "graph.json"
+out_dir = "out/per_impl"
+seed = 1
+
+strategies = ["baseline", "queries_then_filter"]
+
+[run]
+duration_s = 7200
+
+[link]
+latency_ms = 40
+bandwidth_mbps = 20.0
+
+[[peer_sets]]
+name = "3lnd"
+peers = [{ profile = "lnd", count = 3 }]
+
+[[peer_sets]]
+name = "3cln"
+peers = [{ profile = "cln", count = 3 }]
+
+[[peer_sets]]
+name = "3eclair"
+peers = [{ profile = "eclair", count = 3 }]
+
+[[peer_sets]]
+name = "3ldk"
+peers = [{ profile = "ldk", count = 3 }]
+
+[[scenarios]]
+kind = "bootstrap"

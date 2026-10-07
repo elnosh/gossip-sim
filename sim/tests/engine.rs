@@ -139,3 +139,27 @@ fn reconnect_requests_full_syncs_until_five_are_used() {
 	assert_eq!(first_filters(3), [1, 1, 1, 1, 1, 0]);
 	assert_eq!(first_filters(5), [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]);
 }
+
+#[test]
+fn queries_then_filter_never_asks_for_a_replay_and_requeries_on_reconnect() {
+	let run = |st: &str, peers: &[(Kind, usize)]| {
+		let mut s = spec(&format!("qtf-{st}"), StrategySpec::Name(st.into()), peers, Scenario::Bootstrap);
+		s.run.reconnect = Some(engine::ReconnectCfg { down_s: 60 });
+		engine::run(&s, corpus(), &out_dir(&format!("qtf-{st}-{}", peers.len()))).unwrap()
+	};
+	let o = run("queries_then_filter", &[(Kind::Ldk, 1), (Kind::Lnd, 3)]);
+	assert_eq!(f(&o.row, "frac_routable"), 1.0);
+	let now = corpus().meta.dump_time;
+	for (label, st) in &o.peers {
+		assert!(st.filters_from_ldk.iter().all(|(first, _)| *first >= now - 3600), "{label}: {:?}", st.filters_from_ldk);
+	}
+	// The first 3 peers held the range slots; their reconnected copies (entries 4..7) get them back.
+	let ranged: Vec<bool> =
+		o.peers.iter().map(|(_, st)| st.from_ldk.contains_key(&msg_type::QUERY_CHANNEL_RANGE)).collect();
+	assert_eq!(ranged, [true, true, true, false, true, true, true, false]);
+
+	let qtf = run("queries_then_filter", &[(Kind::Lnd, 3)]);
+	let base = run("baseline", &[(Kind::Lnd, 3)]);
+	let after = |o: &engine::RunOutput| f(&o.row, "rx_bytes_after_reconnect");
+	assert!(after(&qtf) < after(&base) / 2.0, "qtf {} baseline {}", after(&qtf), after(&base));
+}

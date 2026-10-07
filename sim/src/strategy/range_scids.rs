@@ -13,6 +13,10 @@
 //!   something newer, as replies arrive.
 //! - A peer that makes no progress for `query_timeout_secs` is dropped and its work moves to
 //!   another peer that offered the same scids.
+//! - `wide_filter_for_ldk = false` gives LDK peers the short filter too, so no peer ever replays
+//!   its whole graph; their range replies are then unused.
+//! - `requery_on_reconnect = true` frees a range peer's slot when it disconnects, so the next
+//!   peer to connect is range-queried again and asked only for what is newer than our graph.
 
 use corpus::checksum::channel_update_checksum;
 use lightning::util::ser::Writeable;
@@ -36,12 +40,16 @@ pub struct Params {
 	pub query_timeout_secs: u64,
 	pub filter_lookback_secs: u32,
 	pub balance: bool,
+	pub wide_filter_for_ldk: bool,
+	pub requery_on_reconnect: bool,
 }
 
 #[derive(Default)]
 struct PeerState {
 	/// Range query outstanding since this time.
 	ranging: Option<u64>,
+	/// Holds one of the `query_peers` range slots.
+	ranged: bool,
 	filter_sent: bool,
 	/// The peer's range replies carry no timestamps (an LDK peer): never send it scid queries.
 	no_timestamps: bool,
@@ -276,7 +284,9 @@ impl Strategy for RangeThenScids {
 					query_option_flags: Some(flags),
 				},
 			});
-			self.peers.get_mut(&peer).unwrap().ranging = Some(now);
+			let st = self.peers.get_mut(&peer).unwrap();
+			st.ranging = Some(now);
+			st.ranged = true;
 			self.first_range_query.get_or_insert(now);
 		} else {
 			self.send_filter(peer, false, graph, now, out);
@@ -288,6 +298,10 @@ impl Strategy for RangeThenScids {
 		if let Some(st) = self.peers.get_mut(&peer) {
 			st.disconnected = true;
 			st.filter_sent = true;
+			if self.p.requery_on_reconnect && st.ranged {
+				st.ranged = false;
+				self.range_peers -= 1;
+			}
 		}
 	}
 
@@ -302,7 +316,7 @@ impl Strategy for RangeThenScids {
 		if no_ts {
 			self.peers.get_mut(&peer).unwrap().no_timestamps = true;
 		}
-		self.send_filter(peer, no_ts, graph, now, out);
+		self.send_filter(peer, no_ts && self.p.wide_filter_for_ldk, graph, now, out);
 		for (i, scid) in msg.short_channel_ids.iter().enumerate() {
 			let o = Offer {
 				peer,

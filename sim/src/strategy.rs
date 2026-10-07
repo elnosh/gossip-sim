@@ -88,6 +88,10 @@ pub struct StrategyParams {
 	pub filter_lookback_secs: Option<u32>,
 	/// range_then_scids: assign scids after all range replies, balancing load across peers.
 	pub balance: Option<bool>,
+	/// range_then_scids: send LDK peers (no timestamps) a two-week filter, i.e. a full replay.
+	pub wide_filter_for_ldk: Option<bool>,
+	/// range_then_scids: a disconnected range peer frees its slot for the next connection.
+	pub requery_on_reconnect: Option<bool>,
 }
 
 impl StrategySpec {
@@ -107,7 +111,10 @@ impl StrategySpec {
 		macro_rules! add {
 			($($f:ident),*) => { $( if let Some(v) = &p.$f { s.push_str(&format!("-{}{}", stringify!($f), v)); } )* };
 		}
-		add!(full_peers, margin_secs, query_peers, use_checksums, batch, query_timeout_secs, filter_lookback_secs, balance);
+		add!(
+			full_peers, margin_secs, query_peers, use_checksums, batch, query_timeout_secs, filter_lookback_secs, balance,
+			wide_filter_for_ldk, requery_on_reconnect
+		);
 		s
 	}
 
@@ -128,14 +135,21 @@ impl StrategySpec {
 			"filter_since_last_seen" => {
 				Box::new(FilterSinceLastSeen::new(p.full_peers.unwrap_or(5), p.margin_secs.unwrap_or(3600)))
 			},
-			"range_then_scids" => Box::new(RangeThenScids::new(range_scids::Params {
-				query_peers: p.query_peers.unwrap_or(3),
-				use_checksums: p.use_checksums.unwrap_or(true),
-				batch: p.batch.unwrap_or(2000),
-				query_timeout_secs: p.query_timeout_secs.unwrap_or(30),
-				filter_lookback_secs: p.filter_lookback_secs.unwrap_or(0),
-				balance: p.balance.unwrap_or(true),
-			})),
+			// queries_then_filter: range_then_scids that never asks for a replay: every filter is
+			// one hour back, and reconnecting peers are range-queried again.
+			name @ ("range_then_scids" | "queries_then_filter") => {
+				let qtf = name == "queries_then_filter";
+				Box::new(RangeThenScids::new(range_scids::Params {
+					query_peers: p.query_peers.unwrap_or(3),
+					use_checksums: p.use_checksums.unwrap_or(true),
+					batch: p.batch.unwrap_or(2000),
+					query_timeout_secs: p.query_timeout_secs.unwrap_or(30),
+					filter_lookback_secs: p.filter_lookback_secs.unwrap_or(if qtf { 3600 } else { 0 }),
+					balance: p.balance.unwrap_or(true),
+					wide_filter_for_ldk: p.wide_filter_for_ldk.unwrap_or(!qtf),
+					requery_on_reconnect: p.requery_on_reconnect.unwrap_or(qtf),
+				}))
+			},
 			other => return Err(format!("unknown strategy `{other}`").into()),
 		}))
 	}
