@@ -1,0 +1,27 @@
+# Bandwidth cost of a brief network outage: once synced, every peer drops and reconnects a minute
+# later. LDK only resets its 5 full-sync budget on restart, so with fewer than 5 peers the
+# reconnects get more two-week filters (and full dumps); with 5 they only get one-hour filters.
+corpus = "graph.json"
+out_dir = "out/reconnect"
+seed = 1
+
+strategies = ["baseline"]
+
+[run]
+duration_s = 7200
+reconnect = { down_s = 60 }
+
+[link]
+latency_ms = 40
+bandwidth_mbps = 20.0
+
+[[peer_sets]]
+name = "3lnd"
+peers = [{ profile = "lnd", count = 3 }]
+
+[[peer_sets]]
+name = "5lnd"
+peers = [{ profile = "lnd", count = 5 }]
+
+[[scenarios]]
+kind = "bootstrap"

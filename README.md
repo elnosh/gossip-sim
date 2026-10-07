@@ -114,6 +114,7 @@ duration_s = 7200
 quiesce_s = 300                  # stop once no gossip moved for this long and nothing is queued
 converge_routable = 0.99
 converge_upds = 0.95
+reconnect = { down_s = 60 }      # on convergence, drop every peer and reconnect after down_s
 
 [link]                           # per connection, each direction
 latency_ms = 40

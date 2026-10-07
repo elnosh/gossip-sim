@@ -43,6 +43,15 @@ pub struct RunCfg {
 	pub verify_sigs: bool,
 	/// Delay between successive outbound connections at startup.
 	pub connect_spacing_ms: u64,
+	/// Once converged, drop every connection and reconnect the same peers.
+	pub reconnect: Option<ReconnectCfg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReconnectCfg {
+	/// How long all peers stay disconnected.
+	pub down_s: u64,
 }
 
 impl Default for RunCfg {
@@ -56,6 +65,7 @@ impl Default for RunCfg {
 			converge_upds: 0.95,
 			verify_sigs: false,
 			connect_spacing_ms: 100,
+			reconnect: None,
 		}
 	}
 }
@@ -99,6 +109,8 @@ enum Ev {
 	LdkPrune,
 	StrategyTick,
 	Sample,
+	/// Connect fresh copies of every peer after a reconnect-triggered disconnect.
+	Reconnect,
 	End,
 }
 
@@ -142,6 +154,15 @@ pub struct RunOutput {
 	pub peers: Vec<(String, crate::peer::PeerStats)>,
 }
 
+/// State at the moment every peer was disconnected for a reconnect.
+struct ReconnectMark {
+	t: SimTime,
+	rx: TypeCounters,
+	tx: TypeCounters,
+	applied: u64,
+	rejected: u64,
+}
+
 struct Sim<'a> {
 	spec: &'a RunSpec,
 	now: SimTime,
@@ -160,6 +181,11 @@ struct Sim<'a> {
 	converged: Option<(SimTime, TypeCounters, TypeCounters)>,
 	last_c: Completeness,
 	end_reason: Option<&'static str>,
+	/// Builds the connection to `spec.peers[i]` with descriptor id `id`.
+	make_conn: Box<dyn Fn(usize, usize) -> Conn + 'a>,
+	reconnect: Option<ReconnectMark>,
+	/// No early stop counts quiet time before this (the end of a reconnect's down time).
+	quiet_from: SimTime,
 }
 
 impl<'a> Sim<'a> {
@@ -340,6 +366,14 @@ impl<'a> Sim<'a> {
 					self.schedule(t, Ev::Sample);
 				}
 			},
+			Ev::Reconnect => {
+				for i in 0..self.spec.peers.len() {
+					let id = self.conns.len();
+					let conn = (self.make_conn)(i, id);
+					self.conns.push(conn);
+					self.schedule(self.now + i as u64 * self.spec.run.connect_spacing_ms * 1000, Ev::Connect(id));
+				}
+			},
 			Ev::End => {
 				if self.end_reason.is_none() {
 					self.end_reason = Some("duration");
@@ -385,6 +419,13 @@ impl<'a> Sim<'a> {
 		{
 			self.converged = Some((self.now, rx.clone(), tx.clone()));
 		}
+		if self.converged.is_some() && self.reconnect.is_none() {
+			if let Some(r) = &self.spec.run.reconnect {
+				self.disconnect_all(rx.clone(), tx.clone());
+				self.quiet_from = self.now + r.down_s * SEC;
+				self.schedule(self.quiet_from, Ev::Reconnect);
+			}
+		}
 		let s = Sample {
 			t_s: self.now as f64 / SEC as f64,
 			c: c.clone(),
@@ -411,11 +452,28 @@ impl<'a> Sim<'a> {
 		let last_gossip = self.conns.iter().map(|c| c.peer.last_gossip).max().unwrap_or(0);
 		let peers_busy = self.conns.iter().any(|c| c.alive && c.peer.has_pending());
 		if self.now >= run.min_duration_s * SEC
-			&& self.now.saturating_sub(last_gossip) >= run.quiesce_s * SEC
+			&& self.now.saturating_sub(last_gossip.max(self.quiet_from)) >= run.quiesce_s * SEC
 			&& idle
 			&& !peers_busy
 		{
 			self.end_reason = Some("quiesced");
+		}
+	}
+
+	/// Drops every live connection; the dead `Conn`s stay so their byte counts keep adding up.
+	fn disconnect_all(&mut self, rx: TypeCounters, tx: TypeCounters) {
+		self.reconnect = Some(ReconnectMark {
+			t: self.now,
+			rx,
+			tx,
+			applied: self.handler.applied.load(Ordering::Relaxed),
+			rejected: self.handler.rejected.load(Ordering::Relaxed),
+		});
+		for c in &mut self.conns {
+			if c.alive {
+				c.alive = false;
+				self.pm.socket_disconnected(&c.desc);
+			}
 		}
 	}
 
@@ -473,6 +531,18 @@ impl<'a> Sim<'a> {
 			.collect();
 		r.put("closed", closed.len());
 		r.put("closed_reasons", closed.join("; "));
+		if let Some(m) = &self.reconnect {
+			r.put("t_reconnect_s", m.t / SEC);
+			r.put("rx_bytes_after_reconnect", metrics::total(&rx) - metrics::total(&m.rx));
+			r.put("tx_bytes_after_reconnect", metrics::total(&tx) - metrics::total(&m.tx));
+			let (now_rx, then_rx) = (metrics::by_family(&rx), metrics::by_family(&m.rx));
+			for fam in ["chan_ann", "chan_upd", "node_ann"] {
+				let get = |m: &std::collections::BTreeMap<&str, u64>| m.get(fam).copied().unwrap_or(0);
+				r.put(&format!("rx_{fam}_after_reconnect"), get(&now_rx) - get(&then_rx));
+			}
+			r.put("applied_after_reconnect", self.handler.applied.load(Ordering::Relaxed) - m.applied);
+			r.put("rejected_after_reconnect", self.handler.rejected.load(Ordering::Relaxed) - m.rejected);
+		}
 		r
 	}
 }
@@ -528,25 +598,21 @@ pub fn run(spec: &RunSpec, corpus: &Corpus, out_dir: &Path) -> crate::Result<Run
 	let bps = link.bandwidth_mbps * 1e6 / 8.0;
 	let latency_us = link.latency_ms * 1000;
 	let sock_buf = link.sock_buf_kb * 1024;
-	let conns = spec
-		.peers
-		.iter()
-		.zip(views)
-		.enumerate()
-		.map(|(i, ((label, profile), view))| {
-			let prng = ChaCha8Rng::seed_from_u64(peer_seed(spec.seed, i).rotate_left(17));
-			Conn {
-				peer: SimPeer::new(label.clone(), profile.clone(), view, 2 * latency_us, epoch, prng, chain_hash),
-				desc: SimDescriptor::new(i, sock_buf),
-				to_peer: Link::new(latency_us, bps),
-				to_ldk: Link::new(latency_us, bps),
-				ldk_rx: VecDeque::new(),
-				alive: true,
-				closed_reason: None,
-				pump_at: None,
-			}
-		})
-		.collect::<Vec<_>>();
+	let make_conn = move |i: usize, id: usize| {
+		let (label, profile) = &spec.peers[i];
+		let prng = ChaCha8Rng::seed_from_u64(peer_seed(spec.seed, i).rotate_left(17));
+		Conn {
+			peer: SimPeer::new(label.clone(), profile.clone(), views[i].clone(), 2 * latency_us, epoch, prng, chain_hash),
+			desc: SimDescriptor::new(id, sock_buf),
+			to_peer: Link::new(latency_us, bps),
+			to_ldk: Link::new(latency_us, bps),
+			ldk_rx: VecDeque::new(),
+			alive: true,
+			closed_reason: None,
+			pump_at: None,
+		}
+	};
+	let conns = (0..spec.peers.len()).map(|i| make_conn(i, i)).collect::<Vec<_>>();
 
 	let run_dir = out_dir.join("runs").join(&spec.id);
 	std::fs::create_dir_all(&run_dir)?;
@@ -571,6 +637,9 @@ pub fn run(spec: &RunSpec, corpus: &Corpus, out_dir: &Path) -> crate::Result<Run
 		converged: None,
 		last_c: Completeness::default(),
 		end_reason: None,
+		make_conn: Box::new(make_conn),
+		reconnect: None,
+		quiet_from: 0,
 	};
 	for i in 0..sim.conns.len() {
 		sim.schedule(i as u64 * spec.run.connect_spacing_ms * 1000, Ev::Connect(i));

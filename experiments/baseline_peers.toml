@@ -1,0 +1,44 @@
+# Current LDK behaviour (baseline) against specific peer mixes, from empty and from a populated graph.
+corpus = "graph.json"
+out_dir = "out/baseline_peers"
+seed = 1
+
+strategies = ["baseline"]
+
+[run]
+duration_s = 7200
+
+[link]
+latency_ms = 40
+bandwidth_mbps = 20.0
+
+# Rough mainnet implementation mix for an 8-peer node.
+[[peer_sets]]
+name = "mixed8"
+peers = [{ profile = "lnd", count = 4 }, { profile = "cln", count = 2 }, { profile = "eclair" }, { profile = "ldk" }]
+
+[[peer_sets]]
+name = "3cln3eclair"
+peers = [{ profile = "cln", count = 3 }, { profile = "eclair", count = 3 }]
+
+[[peer_sets]]
+name = "3cln"
+peers = [{ profile = "cln", count = 3 }]
+
+[[peer_sets]]
+name = "3eclair"
+peers = [{ profile = "eclair", count = 3 }]
+
+# Does each of the 5 wide filters trigger a full LND backlog, re-sending announcements we already have?
+[[peer_sets]]
+name = "5lnd"
+peers = [{ profile = "lnd", count = 5 }]
+
+[[scenarios]]
+kind = "bootstrap"
+
+# Already-populated graph: the node was offline for an hour.
+[[scenarios]]
+kind = "restart"
+offline = ["1h"]
+persisted_updates = "older_version"

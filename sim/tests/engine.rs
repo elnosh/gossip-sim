@@ -123,3 +123,19 @@ fn balanced_assignment_spreads_scid_queries_across_peers() {
 	let t = |o: &engine::RunOutput| f(&o.row, "t_converged_s");
 	assert!(t(&bal) * 2.0 < t(&first), "balanced {} vs first-come {}", t(&bal), t(&first));
 }
+
+#[test]
+fn reconnect_requests_full_syncs_until_five_are_used() {
+	let first_filters = |n: usize| {
+		let mut s = spec(&format!("rc{n}"), StrategySpec::Name("baseline".into()), &[(Kind::Lnd, n)], Scenario::Bootstrap);
+		s.run.reconnect = Some(engine::ReconnectCfg { down_s: 60 });
+		let o = engine::run(&s, corpus(), &out_dir(&format!("rc{n}"))).unwrap();
+		assert!(f(&o.row, "rx_bytes_after_reconnect") > 0.0);
+		let now = corpus().meta.dump_time;
+		// The first n entries are the original connections, the rest their reconnected copies.
+		// Two-week filters start ~14 days back, one-hour filters within the run.
+		o.peers.iter().map(|(_, st)| (st.filters_from_ldk[0].0 < now - 86_400) as usize).collect::<Vec<_>>()
+	};
+	assert_eq!(first_filters(3), [1, 1, 1, 1, 1, 0]);
+	assert_eq!(first_filters(5), [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]);
+}
