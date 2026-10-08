@@ -77,7 +77,7 @@ pub struct SimPeer {
 	rx_off: usize,
 	body_len: Option<usize>,
 	control: VecDeque<Control>,
-	streams: [VecDeque<OutMsg>; 3],
+	streams: [VecDeque<OutMsg>; 2],
 	rr: usize,
 	limiter: Limiter,
 	policy: Box<dyn ResponderPolicy>,
@@ -115,7 +115,7 @@ impl SimPeer {
 			rx_off: 0,
 			body_len: None,
 			control: VecDeque::new(),
-			streams: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+			streams: [VecDeque::new(), VecDeque::new()],
 			rr: 0,
 			limiter,
 			policy,
@@ -300,9 +300,6 @@ impl SimPeer {
 				},
 				Control::Msg(ty, body) => Next::Frame(self.frame(ty, &body), ty),
 			};
-		}
-		if let Some(m) = self.streams[Stream::Unpaced as usize].pop_front() {
-			return self.emit(now, m);
 		}
 		let paced = [Stream::Query as usize, Stream::Backlog as usize];
 		for k in 0..2 {

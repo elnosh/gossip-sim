@@ -1,4 +1,4 @@
-# LDK responder model. Source: rust-lightning d9aa340f9 (routing/gossip.rs, ln/peer_handler.rs).
+# LDK responder model. Source: rust-lightning 6b58e5715 (routing/gossip.rs, ln/peer_handler.rs).
 kind = "ldk"
 
 # P2PGossipSync::peer_connected: now - 2 weeks for the first 5 peers, now - 1 hour afterwards.
@@ -12,7 +12,7 @@ limiter = { kind = "ping_gated", msgs = 32 }
 range_chunk_scids = 8000
 range_max_bytes = 0
 recent_window_secs = 0
-range_queries_per_sec = 0.0
+queries_per_sec = 0.0
 # A filter older than now - 6h triggers a full graph replay (peer_handler.rs ~2367).
 full_sync_threshold_secs = 21600
 supports_timestamps = false

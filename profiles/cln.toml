@@ -1,26 +1,28 @@
-# Core Lightning responder model. Source: CLN v26.04rc2-7-g2ba55cc64 (queries answered in connectd).
+# Core Lightning responder model. Source: CLN v26.06-525-g019a5e190 (queries answered in connectd).
 kind = "cln"
 
-# seeker.c enable_gossip_stream: streaming peers get now - GOSSIP_SEEKER_INTERVAL*10 = now - 600s.
+# seeker.c:232 enable_gossip_stream: streaming peers get now - GOSSIP_SEEKER_INTERVAL*10 = now - 600s.
 # The first startup peer, an empty store, and the hourly full_sync_random_peer get 0 instead.
 own_filter = { kind = "now_minus", secs = 600 }
 
-# gossip_stream_limit = 1000000 B/s per peer (connectd.c:2534), applies to the stream and to scid
-# query responses but not to reply_channel_range (multiplex.c:622-633).
-limiter = { kind = "token_bucket", bytes_per_sec = 1000000.0, burst_bytes = 1000000.0 }
+# gossip_stream_limit = 1000000 B/s per peer (connectd.c:2573), counted per one-second window over
+# the stream and all query responses, reply_channel_range included. Once over, wait until the
+# overage is paid back, at least 1 s (multiplex.c:627-697, 708-725). The per-peer CPU budget
+# (connectd.c:2576) is not modelled.
+limiter = { kind = "window", bytes_per_sec = 1000000.0 }
 
 range_chunk_scids = 0
-# max_entries: 65535 - 2 - 43 bytes of encoding per reply (connectd/queries.c:519-561).
+# max_entries: 65535 - 2 - 43 bytes of encoding per reply (connectd/queries.c:553-595).
 range_max_bytes = 65490
-# A nonzero, non-max filter starts from gossmap_iter_recent: now - 7200 (connectd.c:2263-2278).
+# A nonzero, non-max filter starts from gossmap_iter_recent: now - 7200 (connectd.c:2300-2315).
 recent_window_secs = 7200
-range_queries_per_sec = 0.0
+queries_per_sec = 0.0
 full_sync_threshold_secs = 0
 supports_timestamps = true
 supports_checksums = true
 
 [view]
-# gather_range: "By policy, we don't give announcements here with no channel_updates" (queries.c:603-607).
+# gather_range_scids: "By policy, we don't give announcements here with no channel_updates" (queries.c:626-630).
 include_no_update_chans = false
 # prune_network: either direction older than 14d prunes; a missing direction counts as never stale
 # (gossmap_manage.c:383-471).

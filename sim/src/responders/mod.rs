@@ -28,10 +28,8 @@ use crate::wire::{payload, Bytes};
 pub enum Stream {
 	/// Query responses, paced.
 	Query = 0,
-	/// Sent as fast as the link allows (CLN's `reply_channel_range`).
-	Unpaced = 1,
 	/// Timestamp-filter backlog, paced.
-	Backlog = 2,
+	Backlog = 1,
 }
 
 pub struct OutMsg {

@@ -26,7 +26,8 @@ impl ResponderPolicy for Lnd {
 
 	/// `replyChanRangeQuery`: blocks are kept whole; a block with more channels than the chunk
 	/// size is shuffled and truncated (the excess is silently dropped). An empty first reply
-	/// covers the gap before an overflowing first block. Checksums are not implemented.
+	/// covers the gap before an overflowing first block, unless that block is the query start.
+	/// Checksums are not implemented.
 	fn on_query_channel_range(&mut self, ctx: &mut Ctx, q: &QueryChannelRange, out: &mut Out) {
 		let (ts, _) = wanted_options(q, &self.p);
 		let chunk = if ts { self.p.range_chunk_scids / 2 } else { self.p.range_chunk_scids };
@@ -47,11 +48,13 @@ impl ResponderPolicy for Lnd {
 				cur.extend(block);
 				continue;
 			}
-			out.push(
-				Stream::Query,
-				msg_type::REPLY_CHANNEL_RANGE,
-				reply_range(ctx, first, h - first, false, &cur, ts, false),
-			);
+			if h > first {
+				out.push(
+					Stream::Query,
+					msg_type::REPLY_CHANNEL_RANGE,
+					reply_range(ctx, first, h - first, false, &cur, ts, false),
+				);
+			}
 			first = h;
 			if block.len() > chunk {
 				block.shuffle(ctx.rng);

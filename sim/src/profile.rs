@@ -54,8 +54,9 @@ pub struct Profile {
 	pub range_max_bytes: usize,
 	/// CLN: a nonzero, non-max filter replays only store records newer than this.
 	pub recent_window_secs: u32,
-	/// Eclair: `query_channel_range` messages accepted per second (0 = unlimited).
-	pub range_queries_per_sec: f64,
+	/// Eclair: `query_channel_range` and `query_short_channel_ids` messages accepted per
+	/// rolling second, shared between both (0 = unlimited).
+	pub queries_per_sec: f64,
 	/// LDK: a filter older than now minus this triggers a full graph replay.
 	pub full_sync_threshold_secs: u32,
 	pub supports_timestamps: bool,
@@ -85,7 +86,7 @@ impl Profile {
 				range_chunk_scids: 8000,
 				range_max_bytes: 0,
 				recent_window_secs: 0,
-				range_queries_per_sec: 0.0,
+				queries_per_sec: 0.0,
 				full_sync_threshold_secs: 0,
 				supports_timestamps: true,
 				supports_checksums: false,
@@ -103,14 +104,11 @@ impl Profile {
 					prune_min_age_secs: 0,
 					drops: vec![],
 				},
-				limiter: LimiterCfg::TokenBucket {
-					bytes_per_sec: 1_000_000.0,
-					burst_bytes: 1_000_000.0,
-				},
+				limiter: LimiterCfg::Window { bytes_per_sec: 1_000_000.0 },
 				range_chunk_scids: 0,
 				range_max_bytes: 65_490,
 				recent_window_secs: 7200,
-				range_queries_per_sec: 0.0,
+				queries_per_sec: 0.0,
 				full_sync_threshold_secs: 0,
 				supports_timestamps: true,
 				supports_checksums: true,
@@ -132,7 +130,7 @@ impl Profile {
 				range_chunk_scids: 1500,
 				range_max_bytes: 0,
 				recent_window_secs: 0,
-				range_queries_per_sec: 5.0,
+				queries_per_sec: 5.0,
 				full_sync_threshold_secs: 0,
 				supports_timestamps: true,
 				supports_checksums: true,
@@ -154,7 +152,7 @@ impl Profile {
 				range_chunk_scids: 8000,
 				range_max_bytes: 0,
 				recent_window_secs: 0,
-				range_queries_per_sec: 0.0,
+				queries_per_sec: 0.0,
 				full_sync_threshold_secs: 6 * 3600,
 				supports_timestamps: false,
 				supports_checksums: false,
@@ -190,7 +188,7 @@ pub struct Overrides {
 	pub range_chunk_scids: Option<usize>,
 	pub range_max_bytes: Option<usize>,
 	pub recent_window_secs: Option<u32>,
-	pub range_queries_per_sec: Option<f64>,
+	pub queries_per_sec: Option<f64>,
 	pub full_sync_threshold_secs: Option<u32>,
 	pub supports_timestamps: Option<bool>,
 	pub supports_checksums: Option<bool>,
@@ -219,7 +217,7 @@ impl Overrides {
 			range_chunk_scids,
 			range_max_bytes,
 			recent_window_secs,
-			range_queries_per_sec,
+			queries_per_sec,
 			full_sync_threshold_secs,
 			supports_timestamps,
 			supports_checksums

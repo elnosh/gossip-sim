@@ -8,11 +8,13 @@ use super::*;
 pub struct Cln {
 	p: Profile,
 	scid_query_busy: bool,
+	/// `reply_channel_range` messages of the current range query not yet sent.
+	range_replies_pending: usize,
 }
 
 impl Cln {
 	pub fn new(p: Profile) -> Self {
-		Cln { p, scid_query_busy: false }
+		Cln { p, scid_query_busy: false, range_replies_pending: 0 }
 	}
 
 	/// `max_entries`: how many SCIDs fit in one reply given the requested TLVs.
@@ -46,13 +48,22 @@ impl ResponderPolicy for Cln {
 		self.p.own_filter.resolve(now_unix)
 	}
 
-	/// `queue_channel_ranges`: byte-capped replies cut at block boundaries, pushed unpaced.
-	/// Channels without any update are excluded by the view filter (`gather_range`).
+	/// `handle_query_channel_range` + `maybe_create_range_response`: byte-capped replies cut at
+	/// block boundaries, trickled through the same rate limit as scid query responses. One query
+	/// at a time: a concurrent one gets a warning and is dropped. Channels without any update are
+	/// left out (`gather_range_scids`). CLN builds each reply lazily and only when no scid answer
+	/// is waiting; here replies are queued up front, in order with scid answers.
 	fn on_query_channel_range(&mut self, ctx: &mut Ctx, q: &QueryChannelRange, out: &mut Out) {
+		if self.range_replies_pending > 0 {
+			out.push(Stream::Query, msg_type::WARNING, warning("Bad concurrent query_channel_range"));
+			return;
+		}
 		let (ts, cs) = wanted_options(q, &self.p);
 		let chans: Vec<_> = range_chans(ctx.view, q).into_iter().filter(|(_, c)| c.has_any_update()).collect();
 		let limit = self.max_entries(ts, cs);
-		block_aligned_replies(ctx, q, &chans, limit, ts, cs, Stream::Unpaced, out);
+		let before = out.items.len();
+		block_aligned_replies(ctx, q, &chans, limit, ts, cs, Stream::Query, out);
+		self.range_replies_pending = out.items.len() - before;
 	}
 
 	/// `handle_query_short_channel_ids`: one query at a time (a concurrent one gets a warning and
@@ -108,8 +119,10 @@ impl ResponderPolicy for Cln {
 	}
 
 	fn on_sent(&mut self, ty: u16) {
-		if ty == msg_type::REPLY_SHORT_CHANNEL_IDS_END {
-			self.scid_query_busy = false;
+		match ty {
+			msg_type::REPLY_SHORT_CHANNEL_IDS_END => self.scid_query_busy = false,
+			msg_type::REPLY_CHANNEL_RANGE => self.range_replies_pending -= 1,
+			_ => {},
 		}
 	}
 }

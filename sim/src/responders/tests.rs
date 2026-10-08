@@ -106,7 +106,7 @@ fn cln_range_byte_cap_excludes_no_update_and_checksums() {
 	blocks_whole(&rs);
 	let mut total = 0;
 	for (s, r, _) in &rs {
-		assert_eq!(*s, Stream::Unpaced);
+		assert_eq!(*s, Stream::Query);
 		// 8 bytes of scid + 8 timestamps + 8 checksums per entry must fit the cap.
 		assert!(r.short_channel_ids.len() * 24 <= 4000);
 		assert_eq!(r.checksums.as_ref().unwrap().len(), r.short_channel_ids.len());
@@ -136,6 +136,102 @@ fn eclair_drops_range_queries_over_rate() {
 	let mut out = Out::default();
 	ecl.on_query_channel_range(&mut ctx(&v, &mut rng, 1_000_001), &q, &mut out);
 	assert!(!out.items.is_empty(), "a new second accepts queries again");
+}
+
+#[test]
+fn lnd_no_empty_reply_before_an_overflowing_first_block() {
+	let mut p = Profile::builtin(Kind::Lnd);
+	p.range_chunk_scids = 2;
+	let v = view(&p.view);
+	let mut per_block: std::collections::BTreeMap<u32, usize> = Default::default();
+	for scid in v.chans.keys() {
+		*per_block.entry(height(*scid)).or_default() += 1;
+	}
+	let (&h, _) = per_block.iter().find(|(_, n)| **n > 2).expect("test needs a block with 3+ channels");
+	let mut rng = ChaCha8Rng::seed_from_u64(1);
+	let mut lnd = lnd::Lnd::new(p);
+	for (first, gap_reply) in [(h, false), (h - 1, true)] {
+		let q = range_query(first, 10, None);
+		let mut out = Out::default();
+		lnd.on_query_channel_range(&mut ctx(&v, &mut rng, 0), &q, &mut out);
+		let rs = replies(&out);
+		check_coverage(&q, &rs);
+		assert_eq!(rs[0].1.short_channel_ids.is_empty(), gap_reply);
+	}
+}
+
+#[test]
+fn cln_one_range_query_in_flight() {
+	let mut p = Profile::builtin(Kind::Cln);
+	p.range_max_bytes = 4000;
+	let v = view(&p.view);
+	let mut rng = ChaCha8Rng::seed_from_u64(1);
+	let mut cln = cln::Cln::new(p);
+	let q = range_query(0, u32::MAX, None);
+	let mut out = Out::default();
+	cln.on_query_channel_range(&mut ctx(&v, &mut rng, 0), &q, &mut out);
+	let n = replies(&out).len();
+	assert!(n > 1);
+	let mut busy = Out::default();
+	cln.on_query_channel_range(&mut ctx(&v, &mut rng, 0), &q, &mut busy);
+	assert_eq!(busy.items.len(), 1);
+	assert_eq!(busy.items[0].1.ty, msg_type::WARNING);
+	for _ in 0..n {
+		cln.on_sent(msg_type::REPLY_CHANNEL_RANGE);
+	}
+	let mut again = Out::default();
+	cln.on_query_channel_range(&mut ctx(&v, &mut rng, 0), &q, &mut again);
+	assert_eq!(replies(&again).len(), n);
+}
+
+#[test]
+fn eclair_rate_limit_is_shared_and_rolling() {
+	let p = Profile::builtin(Kind::Eclair);
+	let v = view(&p.view);
+	let (a, _) = two_chans_sharing_a_node(&v);
+	let mut rng = ChaCha8Rng::seed_from_u64(1);
+	let mut ecl = eclair::Eclair::new(p);
+	let rq = range_query(900_000, 10, None);
+	let mut answered = 0;
+	for i in 0..3 {
+		let mut out = Out::default();
+		ecl.on_query_channel_range(&mut ctx(&v, &mut rng, i * 100_000), &rq, &mut out);
+		answered += (!out.items.is_empty()) as usize;
+	}
+	for i in 3..6 {
+		let mut out = Out::default();
+		ecl.on_query_short_channel_ids(&mut ctx(&v, &mut rng, i * 100_000), &scid_query(vec![a], None), &mut out);
+		answered += (!out.items.is_empty()) as usize;
+		ecl.on_sent(msg_type::REPLY_SHORT_CHANNEL_IDS_END);
+	}
+	assert_eq!(answered, 5, "both query kinds share 5 per second");
+	// Rolling window: at 1.05 s the first query (t = 0) has aged out, the second (t = 0.1 s) not.
+	let mut out = Out::default();
+	ecl.on_query_channel_range(&mut ctx(&v, &mut rng, 1_050_000), &rq, &mut out);
+	assert!(!out.items.is_empty());
+	let mut out = Out::default();
+	ecl.on_query_channel_range(&mut ctx(&v, &mut rng, 1_060_000), &rq, &mut out);
+	assert!(out.items.is_empty());
+}
+
+#[test]
+fn eclair_drops_bad_flags_and_pipelined_scid_queries() {
+	let p = Profile::builtin(Kind::Eclair);
+	let v = view(&p.view);
+	let (a, b) = two_chans_sharing_a_node(&v);
+	let mut rng = ChaCha8Rng::seed_from_u64(1);
+	let mut ecl = eclair::Eclair::new(p);
+	let mut out = Out::default();
+	ecl.on_query_short_channel_ids(&mut ctx(&v, &mut rng, 0), &scid_query(vec![a, b], Some(vec![QF_ALL])), &mut out);
+	assert!(out.items.is_empty(), "flag count must match scid count");
+	ecl.on_query_short_channel_ids(&mut ctx(&v, &mut rng, 2_000_000), &scid_query(vec![a], None), &mut out);
+	assert_eq!(out.items.last().unwrap().1.ty, msg_type::REPLY_SHORT_CHANNEL_IDS_END);
+	let mut pipelined = Out::default();
+	ecl.on_query_short_channel_ids(&mut ctx(&v, &mut rng, 4_000_000), &scid_query(vec![b], None), &mut pipelined);
+	assert!(pipelined.items.is_empty(), "previous query's end not sent yet");
+	ecl.on_sent(msg_type::REPLY_SHORT_CHANNEL_IDS_END);
+	ecl.on_query_short_channel_ids(&mut ctx(&v, &mut rng, 6_000_000), &scid_query(vec![b], None), &mut pipelined);
+	assert!(!pipelined.items.is_empty());
 }
 
 #[test]

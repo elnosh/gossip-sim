@@ -1,26 +1,31 @@
-# Eclair responder model. Source: ACINQ/eclair master (router/Sync.scala, io/PeerConnection.scala,
-# router/StaleChannels.scala, reference.conf).
+# Eclair responder model. Source: eclair 248893a3a (2026-10-08). Paths are under
+# eclair-core/src/main/: scala/fr/acinq/eclair/{router/Sync.scala, io/PeerConnection.scala,
+# router/StaleChannels.scala}, resources/reference.conf.
 kind = "eclair"
 
-# GossipTimestampFilter(firstTimestamp = now - 1 minute, timestampRange = Int.MaxValue).
+# GossipTimestampFilter(firstTimestamp = now - 1 minute, timestampRange = Int.MaxValue) (Sync.scala:62).
+# Only sent to peers Eclair syncs with: up to 5 channel peers, or whitelisted ones (PeerConnection.scala:171).
 own_filter = { kind = "now_minus", secs = 60 }
 
-# No byte limiter on outbound gossip.
+# No byte limiter on outbound gossip (replies go straight to the transport, Sync.scala:87, 198-208).
 limiter = { kind = "none" }
 
-# router.sync.channel-range-chunk-size = 1500.
+# router.sync.channel-range-chunk-size = 1500 (reference.conf:489).
 range_chunk_scids = 1500
 range_max_bytes = 0
 recent_window_secs = 0
-# router.sync.max-queries-per-second = 5 (excess query_channel_range dropped by gossipQueriesRateLimiter).
-range_queries_per_sec = 5.0
+# router.sync.max-queries-per-second = 5 (reference.conf:499): gossipQueriesRateLimiter, a rolling
+# one-second window shared by query_channel_range and query_short_channel_ids; excess queries are
+# dropped silently (PeerConnection.scala:366-381, io/RateLimiter.scala).
+queries_per_sec = 5.0
 full_sync_threshold_secs = 0
 supports_timestamps = true
 supports_checksums = true
 
 [view]
 include_no_update_chans = true
-# StaleChannels.isStale: older than 2016 blocks AND (update1 missing-or-stale OR update2 missing-or-stale), 14d.
+# StaleChannels.isStale: older than 2016 blocks AND (update1 missing-or-stale OR update2 missing-or-stale), 14d
+# (StaleChannels.scala:59-63, 84-90). Channels without updates are kept only while younger than 2016 blocks.
 stale_rule = "either_side"
 stale_secs = 1209600
 missing_is_stale = true

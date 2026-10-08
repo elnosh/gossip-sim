@@ -1,19 +1,19 @@
-# LND responder model. Source: lnd a79ffec9e (2026-08-18).
+# LND responder model. Source: lnd a27ead091 (2026-10-08).
 kind = "lnd"
 
 # Passive syncer filter: firstTimestamp = uint32(time.Time{}.Unix()) = 2288912640, range 0
-# (discovery/syncer.go:1850-1852). Active syncers send first=now (syncer.go:683-686).
+# (discovery/syncer.go:2045-2047). Active syncers send first=now (syncer.go:786-789).
 own_filter = { kind = "fixed", first = 2288912640, range = 0 }
 
 # Every reply and backlog message goes through sendMsgRateLimited: per-peer token bucket
-# DefaultPeerMsgBytesPerSecond = 50 KiB/s, burst 2x (discovery/syncer.go:428-437, sync_manager.go:47).
+# DefaultPeerMsgBytesPerSecond = 50 KiB/s, burst 2x (discovery/syncer.go:477-486, sync_manager.go:49).
 limiter = { kind = "token_bucket", bytes_per_sec = 51200.0, burst_bytes = 102400.0 }
 
-# encodingTypeToChunkSize[EncodingSortedPlain] = 8000, halved with timestamps (syncer.go:195-197, 1305-1308).
+# encodingTypeToChunkSize[EncodingSortedPlain] = 8000, halved with timestamps (syncer.go:200-202, 1480-1483).
 range_chunk_scids = 8000
 range_max_bytes = 0
 recent_window_secs = 0
-range_queries_per_sec = 0.0
+queries_per_sec = 0.0
 full_sync_threshold_secs = 0
 # query_option timestamps supported; checksums not implemented anywhere in lnwire.
 supports_timestamps = true
